@@ -1,6 +1,4 @@
-package com.securepay.app.services;
-
-
+package com.securepay.auth.service;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JWT SERVICE
@@ -9,9 +7,9 @@ package com.securepay.app.services;
 // Spring Security's job is to read the already-validated token from context.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import com.securepay.app.auth.model.AuthSession;
-import com.securepay.app.auth.model.RiskLevel;
-import com.securepay.app.auth.model.User;
+import com.securepay.auth.model.AuthSession;
+import com.securepay.auth.model.RiskLevel;
+import com.securepay.auth.model.User;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
@@ -229,8 +227,8 @@ class JwtService {
 // Extracts device context from HTTP request, computes hash, manages persistence.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import com.securepay.app.auth.dto.DeviceContext;
-import com.securepay.app.auth.repository.DeviceFingerprintRepository;
+import com.securepay.auth.dto.DeviceContext;
+import com.securepay.auth.repository.DeviceFingerprintRepository;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.transaction.annotation.Transactional;
@@ -505,8 +503,8 @@ class DeviceFingerprintService {
 // Computes login-time risk score from multiple signals in parallel.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import com.securepay.app.auth.dto.RiskEvaluation;
-import com.securepay.app.auth.repository.AuthSessionRepository;
+import com.securepay.auth.dto.RiskEvaluation;
+import com.securepay.auth.repository.AuthSessionRepository;
 import org.springframework.beans.factory.annotation.Qualifier;
 
 import java.time.LocalTime;
@@ -718,11 +716,11 @@ class RiskEvaluatorService {
 // This is the class with the most transactional complexity.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import com.securepay.app.auth.exception.AuthenticationFailedException;
-import com.securepay.app.auth.exception.DuplicateUserException;
-import com.securepay.app.auth.exception.InvalidTotpException;
-import com.securepay.app.auth.exception.TokenRevokedException;
-import com.securepay.app.auth.repository.UserRepository;
+import com.securepay.auth.exception.AuthenticationFailedException;
+import com.securepay.auth.exception.DuplicateUserException;
+import com.securepay.auth.exception.InvalidTotpException;
+import com.securepay.auth.exception.TokenRevokedException;
+import com.securepay.auth.repository.UserRepository;
 import dev.samstevens.totp.code.CodeVerifier;
 import io.jsonwebtoken.JwtException;
 import lombok.extern.slf4j.Slf4j;
