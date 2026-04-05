@@ -1172,7 +1172,7 @@ class AuthService {
         AuthSession session = sessionRepository
                 .findFirstActiveByUserId(user.getId(), LocalDateTime.now())
                 .orElseThrow(() -> new TokenRevokedException());
-
+//   
         // ── Generate new access token from existing session ───────────────────
         // Risk level and device hash come from the existing session — not recomputed.
         // Risk is sticky for the session lifetime. To get re-evaluated risk, user must re-login.
