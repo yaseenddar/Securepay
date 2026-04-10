@@ -2,6 +2,7 @@ package com.securepay.transaction.service;
 
 import com.securepay.transaction.dto.*;
 import com.securepay.transaction.exception.*;
+import com.securepay.transaction.model.OutboxEvent;
 import com.securepay.transaction.model.Payment;
 import com.securepay.transaction.model.Wallet;
 //import com.securepay.transaction.model.*;
@@ -9,7 +10,6 @@ import com.securepay.transaction.repository.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -84,9 +84,10 @@ class PaymentService {
      * BLOCKED is terminal — no retry possible with same key.
      * Client must create a new payment (new idempotency key) if they want to retry.
      * This is intentional — a blocked payment should not be retried silently.
+     * @throws InsufficientFundsException 
      */
     @Transactional
-    public PaymentResponse initiatePayment(PaymentRequest request, AuthContext auth) {
+    public PaymentResponse initiatePayment(PaymentRequest request, AuthContext auth) throws InsufficientFundsException {
 
         // ── Step 1: Idempotency fast-path check ──────────────────────────────
         // Check BEFORE building the entity — avoid wasted work on duplicates.
@@ -201,9 +202,10 @@ class PaymentService {
      *
      * This dual behavior (join or start) is exactly what REQUIRED propagation provides.
      * No special configuration needed.
+     * @throws InsufficientFundsException 
      */
     @Transactional
-    public PaymentResponse processPayment(UUID paymentId) {
+    public PaymentResponse processPayment(UUID paymentId) throws InsufficientFundsException {
 
         // ── Step 1: Load payment ──────────────────────────────────────────────
         Payment payment = paymentRepo.findById(paymentId)
@@ -357,9 +359,10 @@ class PaymentService {
      *
      * LOCK ORDER:
      * Always lockWalletsInOrder() — see LedgerService for deadlock explanation.
+     * @throws InsufficientFundsException 
      */
     @Transactional
-    public PaymentResponse reversePayment(UUID paymentId, String reason) {
+    public PaymentResponse reversePayment(UUID paymentId, String reason) throws InsufficientFundsException {
 
         // ── Load and validate ─────────────────────────────────────────────────
         Payment payment = paymentRepo.findById(paymentId)
@@ -633,208 +636,208 @@ class OutboxService {
 // Runs on a schedule — separate from the domain transaction.
 // ─────────────────────────────────────────────────────────────────────────────
 
-@Service
-@Slf4j
-class OutboxPublisher {
-
-    private final OutboxEventRepository outboxRepo;
-    private final KafkaTemplate<String, String> kafkaTemplate;
-
-    @Value("${outbox.publisher.batch-size}")
-    private int batchSize;
-
-    OutboxPublisher(
-            OutboxEventRepository outboxRepo,
-            KafkaTemplate<String, String> kafkaTemplate
-    ) {
-        this.outboxRepo    = outboxRepo;
-        this.kafkaTemplate = kafkaTemplate;
-    }
-
-    /**
-     * Poll outbox and publish pending events to Kafka.
-     *
-     * ── SCHEDULING ───────────────────────────────────────────────────────────
-     * @Scheduled(fixedDelay) means: wait N ms AFTER the previous execution
-     * finishes before starting the next one. Not a fixed rate.
-     *
-     * WHY fixedDelay and not fixedRate?
-     * fixedRate fires every N ms regardless of how long the job takes.
-     * If the job takes 2s and fixedRate=1s, executions pile up.
-     * fixedDelay waits N ms after completion — next run starts only after
-     * previous finishes. No pile-up. Predictable load on DB and Kafka.
-     *
-     * ── SHEDLOCK ─────────────────────────────────────────────────────────────
-     * @SchedulerLock acquires an exclusive lock in the shedlock DB table.
-     * Only ONE pod runs this job at any instant across the entire cluster.
-     *
-     * lockAtMostFor = "PT30S" (ISO 8601 duration = 30 seconds):
-     * Maximum time any pod can hold the lock.
-     * If the pod holding the lock crashes mid-job, this is the safety valve.
-     * After 30s, the lock is considered stale → another pod can take over.
-     * Set this to: (expected max job duration) × 3 for safety margin.
-     *
-     * lockAtLeastFor = "PT5S":
-     * Minimum hold time. Prevents a fast pod from hogging the lock by
-     * finishing in 10ms and immediately re-acquiring. Other pods never get
-     * a chance. 5s minimum gives fair distribution across pods.
-     *
-     * ── TRANSACTION BOUNDARY ─────────────────────────────────────────────────
-     * This method is NOT @Transactional for a deliberate reason.
-     *
-     * The publish loop needs to:
-     * 1. Send to Kafka (external system — outside any DB transaction)
-     * 2. Mark as published in DB
-     *
-     * If we wrapped everything in @Transactional:
-     * - Kafka sends would happen inside an open DB transaction
-     * - Long-running transactions holding DB connections = connection pool exhaustion
-     * - Kafka send success/failure can't be rolled back anyway
-     *
-     * Instead: each event is its own mini-operation.
-     * markPublished() runs in its own short @Modifying query.
-     * No long-held DB connections.
-     *
-     * ── KAFKA SEND IS ASYNC ──────────────────────────────────────────────────
-     * kafkaTemplate.send() returns a CompletableFuture<SendResult>.
-     * The send is asynchronous — it returns immediately, Kafka brokers
-     * acknowledge in the background.
-     *
-     * We call .get(5, TimeUnit.SECONDS) to wait for the ack synchronously.
-     * WHY wait? If we don't wait and the send fails silently:
-     * - We'd mark the event as published (it wasn't)
-     * - Event is lost forever (no retry)
-     *
-     * Waiting for ack means: Kafka brokers confirmed receipt.
-     * Only then do we mark published=true.
-     *
-     * The 5-second timeout is the max wait per event.
-     * With batch size 50: worst case = 50 × 5s = 250s per cycle.
-     * In practice: acks arrive in ~5ms on a healthy cluster.
-     */
-    @Scheduled(fixedDelayString = "${outbox.publisher.poll-interval-ms}")
-    @net.javacrumbs.shedlock.spring.annotation.SchedulerLock(
-            name = "outbox_publisher",
-            lockAtMostFor  = "${outbox.publisher.lock-at-most-seconds}000ms",
-            lockAtLeastFor = "${outbox.publisher.lock-at-least-seconds}000ms"
-    )
-    public void publishPendingEvents() {
-        // ── Load a bounded batch of unpublished events ────────────────────────
-        // PageRequest.of(0, batchSize): first page, batchSize rows.
-        // Ordered by createdAt ASC — FIFO, oldest events published first.
-        // Partial index idx_outbox_unpublished covers this query efficiently.
-        List<OutboxEvent> pending = outboxRepo.findUnpublishedEvents(
-                org.springframework.data.domain.PageRequest.of(0, batchSize)
-        );
-
-        if (pending.isEmpty()) {
-            return; // nothing to publish — common case, exit fast
-        }
-
-        int published = 0;
-        int failed    = 0;
-
-        for (OutboxEvent event : pending) {
-            try {
-                // ── Send to Kafka — synchronous ack wait ──────────────────────
-                // Partition key = aggregateId (paymentId as string).
-                // All events for same payment → same partition → ordered delivery.
-                kafkaTemplate.send(
-                        event.getTopic(),
-                        event.getAggregateId().toString(), // partition key
-                        event.getPayload()
-                ).get(5, java.util.concurrent.TimeUnit.SECONDS);
-                // .get() blocks until Kafka brokers ack the message
-                // Throws ExecutionException if Kafka rejects
-                // Throws TimeoutException if no ack in 5 seconds
-
-                // ── Mark published — short targeted UPDATE ───────────────────
-                // @Modifying query: UPDATE outbox_events SET published=true WHERE id=?
-                // Single statement, no entity load, committed immediately.
-                // NOT in a transaction — this is a one-way write, no rollback needed.
-                outboxRepo.markPublished(event.getId(), LocalDateTime.now());
-                published++;
-
-                log.debug("Event published: id={}, type={}, paymentId={}",
-                        event.getId(), event.getEventType(), event.getAggregateId());
-
-            } catch (java.util.concurrent.TimeoutException ex) {
-                // ── Kafka timed out — broker may be slow or unreachable ───────
-                handlePublishFailure(event,
-                        "Kafka send timed out after 5s: " + ex.getMessage());
-                failed++;
-
-            } catch (java.util.concurrent.ExecutionException ex) {
-                // ── Kafka rejected the message ─────────────────────────────────
-                // Possible causes: serialization error, topic doesn't exist,
-                // authorization failure, broker returned an error.
-                handlePublishFailure(event,
-                        "Kafka send failed: " + ex.getCause().getMessage());
-                failed++;
-
-            } catch (InterruptedException ex) {
-                // ── Thread interrupted — probably application shutdown ──────────
-                // Restore interrupt flag and stop processing.
-                // Don't record as failure — the event will be retried on restart.
-                Thread.currentThread().interrupt();
-                log.warn("OutboxPublisher interrupted during send — stopping batch");
-                break;
-
-            } catch (Exception ex) {
-                // ── Unexpected exception ──────────────────────────────────────
-                handlePublishFailure(event, "Unexpected error: " + ex.getMessage());
-                failed++;
-                log.error("Unexpected error publishing event={}", event.getId(), ex);
-            }
-        }
-
-        // ── Batch statistics ──────────────────────────────────────────────────
-        if (published > 0 || failed > 0) {
-            log.info("Outbox batch complete: published={}, failed={}, batchSize={}",
-                    published, failed, pending.size());
-        }
-
-        // ── Alert on dead letters ─────────────────────────────────────────────
-        // Check if any events have crossed the dead-letter threshold (5 retries).
-        // In production: integrate with PagerDuty / Alertmanager here.
-        List<OutboxEvent> deadLetters = outboxRepo.findDeadLetterEvents();
-        if (!deadLetters.isEmpty()) {
-            log.error("DEAD LETTER EVENTS DETECTED: count={}. Manual intervention required.",
-                    deadLetters.size());
-            deadLetters.forEach(dl ->
-                    log.error("Dead letter: id={}, type={}, paymentId={}, lastError={}",
-                            dl.getId(), dl.getEventType(),
-                            dl.getAggregateId(), dl.getLastError())
-            );
-        }
-    }
-
-    /**
-     * Record a publish failure on the event.
-     *
-     * event.recordFailure() increments retryCount and stores the error message.
-     * If retryCount reaches 5: event.isDeadLetter() returns true.
-     * Dead letter events are excluded from future polling
-     * (findUnpublishedEvents filters retryCount < 5).
-     *
-     * WHY save with @Transactional here and not in the main loop?
-     * The failure record is a separate concern from the publish attempt.
-     * If we fail to save the failure record (DB down), that's acceptable —
-     * the event will still be retried on next poll cycle (retryCount stays 0).
-     * We don't want a DB failure during failure recording to mask the
-     * original Kafka failure.
-     */
-    @Transactional
-    protected void handlePublishFailure(OutboxEvent event, String error) {
-        event.recordFailure(error);
-        outboxRepo.save(event);
-
-        if (event.isDeadLetter()) {
-            log.error("Event moved to dead letter: id={}, type={}, retries={}, error={}",
-                    event.getId(), event.getEventType(), event.getRetryCount(), error);
-        } else {
-            log.warn("Event publish failed (retry {}/5): id={}, error={}",
-                    event.getRetryCount(), event.getId(), error);
-        }
-    }
-}
+//@Service
+//@Slf4j
+//class OutboxPublisher {
+//
+//    private final OutboxEventRepository outboxRepo;
+//    private final KafkaTemplate<String, String> kafkaTemplate;
+//
+//    @Value("${outbox.publisher.batch-size}")
+//    private int batchSize;
+//
+//    OutboxPublisher(
+//            OutboxEventRepository outboxRepo,
+//            KafkaTemplate<String, String> kafkaTemplate
+//    ) {
+//        this.outboxRepo    = outboxRepo;
+//        this.kafkaTemplate = kafkaTemplate;
+//    }
+//
+//    /**
+//     * Poll outbox and publish pending events to Kafka.
+//     *
+//     * ── SCHEDULING ───────────────────────────────────────────────────────────
+//     * @Scheduled(fixedDelay) means: wait N ms AFTER the previous execution
+//     * finishes before starting the next one. Not a fixed rate.
+//     *
+//     * WHY fixedDelay and not fixedRate?
+//     * fixedRate fires every N ms regardless of how long the job takes.
+//     * If the job takes 2s and fixedRate=1s, executions pile up.
+//     * fixedDelay waits N ms after completion — next run starts only after
+//     * previous finishes. No pile-up. Predictable load on DB and Kafka.
+//     *
+//     * ── SHEDLOCK ─────────────────────────────────────────────────────────────
+//     * @SchedulerLock acquires an exclusive lock in the shedlock DB table.
+//     * Only ONE pod runs this job at any instant across the entire cluster.
+//     *
+//     * lockAtMostFor = "PT30S" (ISO 8601 duration = 30 seconds):
+//     * Maximum time any pod can hold the lock.
+//     * If the pod holding the lock crashes mid-job, this is the safety valve.
+//     * After 30s, the lock is considered stale → another pod can take over.
+//     * Set this to: (expected max job duration) × 3 for safety margin.
+//     *
+//     * lockAtLeastFor = "PT5S":
+//     * Minimum hold time. Prevents a fast pod from hogging the lock by
+//     * finishing in 10ms and immediately re-acquiring. Other pods never get
+//     * a chance. 5s minimum gives fair distribution across pods.
+//     *
+//     * ── TRANSACTION BOUNDARY ─────────────────────────────────────────────────
+//     * This method is NOT @Transactional for a deliberate reason.
+//     *
+//     * The publish loop needs to:
+//     * 1. Send to Kafka (external system — outside any DB transaction)
+//     * 2. Mark as published in DB
+//     *
+//     * If we wrapped everything in @Transactional:
+//     * - Kafka sends would happen inside an open DB transaction
+//     * - Long-running transactions holding DB connections = connection pool exhaustion
+//     * - Kafka send success/failure can't be rolled back anyway
+//     *
+//     * Instead: each event is its own mini-operation.
+//     * markPublished() runs in its own short @Modifying query.
+//     * No long-held DB connections.
+//     *
+//     * ── KAFKA SEND IS ASYNC ──────────────────────────────────────────────────
+//     * kafkaTemplate.send() returns a CompletableFuture<SendResult>.
+//     * The send is asynchronous — it returns immediately, Kafka brokers
+//     * acknowledge in the background.
+//     *
+//     * We call .get(5, TimeUnit.SECONDS) to wait for the ack synchronously.
+//     * WHY wait? If we don't wait and the send fails silently:
+//     * - We'd mark the event as published (it wasn't)
+//     * - Event is lost forever (no retry)
+//     *
+//     * Waiting for ack means: Kafka brokers confirmed receipt.
+//     * Only then do we mark published=true.
+//     *
+//     * The 5-second timeout is the max wait per event.
+//     * With batch size 50: worst case = 50 × 5s = 250s per cycle.
+//     * In practice: acks arrive in ~5ms on a healthy cluster.
+//     */
+//    @Scheduled(fixedDelayString = "${outbox.publisher.poll-interval-ms}")
+//    @net.javacrumbs.shedlock.spring.annotation.SchedulerLock(
+//            name = "outbox_publisher",
+//            lockAtMostFor  = "${outbox.publisher.lock-at-most-seconds}000ms",
+//            lockAtLeastFor = "${outbox.publisher.lock-at-least-seconds}000ms"
+//    )
+//    public void publishPendingEvents() {
+//        // ── Load a bounded batch of unpublished events ────────────────────────
+//        // PageRequest.of(0, batchSize): first page, batchSize rows.
+//        // Ordered by createdAt ASC — FIFO, oldest events published first.
+//        // Partial index idx_outbox_unpublished covers this query efficiently.
+//        List<OutboxEvent> pending = outboxRepo.findUnpublishedEvents(
+//                org.springframework.data.domain.PageRequest.of(0, batchSize)
+//        );
+//
+//        if (pending.isEmpty()) {
+//            return; // nothing to publish — common case, exit fast
+//        }
+//
+//        int published = 0;
+//        int failed    = 0;
+//
+//        for (OutboxEvent event : pending) {
+//            try {
+//                // ── Send to Kafka — synchronous ack wait ──────────────────────
+//                // Partition key = aggregateId (paymentId as string).
+//                // All events for same payment → same partition → ordered delivery.
+//                kafkaTemplate.send(
+//                        event.getTopic(),
+//                        event.getAggregateId().toString(), // partition key
+//                        event.getPayload()
+//                ).get(5, java.util.concurrent.TimeUnit.SECONDS);
+//                // .get() blocks until Kafka brokers ack the message
+//                // Throws ExecutionException if Kafka rejects
+//                // Throws TimeoutException if no ack in 5 seconds
+//
+//                // ── Mark published — short targeted UPDATE ───────────────────
+//                // @Modifying query: UPDATE outbox_events SET published=true WHERE id=?
+//                // Single statement, no entity load, committed immediately.
+//                // NOT in a transaction — this is a one-way write, no rollback needed.
+//                outboxRepo.markPublished(event.getId(), LocalDateTime.now());
+//                published++;
+//
+//                log.debug("Event published: id={}, type={}, paymentId={}",
+//                        event.getId(), event.getEventType(), event.getAggregateId());
+//
+//            } catch (java.util.concurrent.TimeoutException ex) {
+//                // ── Kafka timed out — broker may be slow or unreachable ───────
+//                handlePublishFailure(event,
+//                        "Kafka send timed out after 5s: " + ex.getMessage());
+//                failed++;
+//
+//            } catch (java.util.concurrent.ExecutionException ex) {
+//                // ── Kafka rejected the message ─────────────────────────────────
+//                // Possible causes: serialization error, topic doesn't exist,
+//                // authorization failure, broker returned an error.
+//                handlePublishFailure(event,
+//                        "Kafka send failed: " + ex.getCause().getMessage());
+//                failed++;
+//
+//            } catch (InterruptedException ex) {
+//                // ── Thread interrupted — probably application shutdown ──────────
+//                // Restore interrupt flag and stop processing.
+//                // Don't record as failure — the event will be retried on restart.
+//                Thread.currentThread().interrupt();
+//                log.warn("OutboxPublisher interrupted during send — stopping batch");
+//                break;
+//
+//            } catch (Exception ex) {
+//                // ── Unexpected exception ──────────────────────────────────────
+//                handlePublishFailure(event, "Unexpected error: " + ex.getMessage());
+//                failed++;
+//                log.error("Unexpected error publishing event={}", event.getId(), ex);
+//            }
+//        }
+//
+//        // ── Batch statistics ──────────────────────────────────────────────────
+//        if (published > 0 || failed > 0) {
+//            log.info("Outbox batch complete: published={}, failed={}, batchSize={}",
+//                    published, failed, pending.size());
+//        }
+//
+//        // ── Alert on dead letters ─────────────────────────────────────────────
+//        // Check if any events have crossed the dead-letter threshold (5 retries).
+//        // In production: integrate with PagerDuty / Alertmanager here.
+//        List<OutboxEvent> deadLetters = outboxRepo.findDeadLetterEvents();
+//        if (!deadLetters.isEmpty()) {
+//            log.error("DEAD LETTER EVENTS DETECTED: count={}. Manual intervention required.",
+//                    deadLetters.size());
+//            deadLetters.forEach(dl ->
+//                    log.error("Dead letter: id={}, type={}, paymentId={}, lastError={}",
+//                            dl.getId(), dl.getEventType(),
+//                            dl.getAggregateId(), dl.getLastError())
+//            );
+//        }
+//    }
+//
+//    /**
+//     * Record a publish failure on the event.
+//     *
+//     * event.recordFailure() increments retryCount and stores the error message.
+//     * If retryCount reaches 5: event.isDeadLetter() returns true.
+//     * Dead letter events are excluded from future polling
+//     * (findUnpublishedEvents filters retryCount < 5).
+//     *
+//     * WHY save with @Transactional here and not in the main loop?
+//     * The failure record is a separate concern from the publish attempt.
+//     * If we fail to save the failure record (DB down), that's acceptable —
+//     * the event will still be retried on next poll cycle (retryCount stays 0).
+//     * We don't want a DB failure during failure recording to mask the
+//     * original Kafka failure.
+//     */
+//    @Transactional
+//    protected void handlePublishFailure(OutboxEvent event, String error) {
+//        event.recordFailure(error);
+//        outboxRepo.save(event);
+//
+//        if (event.isDeadLetter()) {
+//            log.error("Event moved to dead letter: id={}, type={}, retries={}, error={}",
+//                    event.getId(), event.getEventType(), event.getRetryCount(), error);
+//        } else {
+//            log.warn("Event publish failed (retry {}/5): id={}, error={}",
+//                    event.getRetryCount(), event.getId(), error);
+//        }
+//    }
+//}

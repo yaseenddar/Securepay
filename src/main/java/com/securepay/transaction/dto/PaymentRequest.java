@@ -1,5 +1,7 @@
 package com.securepay.transaction.dto;
 
+import java.math.BigDecimal;
+
 import lombok.Builder;
 import lombok.Data;
 import lombok.Getter;
@@ -10,7 +12,7 @@ public class PaymentRequest {
     private String idempotencyKey;
     private String payerUserId;
     private String payeeVpa;
-    private double amount;
+    private BigDecimal amount;
     private String currency;
     private PaymentStatus status;
     private String riskLevel;

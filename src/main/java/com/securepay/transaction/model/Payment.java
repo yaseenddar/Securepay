@@ -4,6 +4,7 @@ import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.UpdateTimestamp;
 
+import com.securepay.auth.model.RiskLevel;
 import com.securepay.transaction.dto.PaymentStatus;
 import com.securepay.transaction.exception.InsufficientFundsException;
 
@@ -71,7 +72,7 @@ public class Payment {
   private PaymentStatus status = PaymentStatus.INITIATED;
 
   @Column(name = "risk_level", length = 10)
-  private String riskLevel;
+  private RiskLevel riskLevel;
 
   @Column(name = "step_up_required")
   private boolean stepUpRequired = false;
