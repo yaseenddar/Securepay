@@ -80,6 +80,7 @@ public enum PaymentStatus {
      * this to payment.status, the IDE warns about unused return value.
      */
     public PaymentStatus transitionTo(PaymentStatus next) {
+        System.out.println("PPPPPPPPPPPPPPPPPPPPPPPPPPPPP Status check {} "+next);
         if (!canTransitionTo(next)) {
             throw new IllegalStateTransitionException(
                     "Illegal payment state transition: " + this + " → " + next

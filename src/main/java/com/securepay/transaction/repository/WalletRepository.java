@@ -11,18 +11,15 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
-import com.securepay.transaction.model.Payment;
 import com.securepay.transaction.model.Wallet;
 @Repository
 public interface WalletRepository extends JpaRepository<Wallet, UUID> {
 
 	Optional<Wallet> findByUserId(UUID userId);
 
+	Optional<Wallet> findByPayeeVpa(String payeeVpa);
+
 	@Lock(LockModeType.PESSIMISTIC_WRITE)
 	@Query("select w from Wallet w where w.userId = :userId")
 	Optional<Wallet> findByUserIdForUpdate(@Param("userId") UUID userId);
-	
-	@Lock(LockModeType.PESSIMISTIC_WRITE)
-	@Query("select w from Wallet w where w.userId = :userId")
-	Optional<Payment> findByUserId(String payeeVpa);
 }

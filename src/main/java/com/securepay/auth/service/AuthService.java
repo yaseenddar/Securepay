@@ -1,5 +1,6 @@
 package com.securepay.auth.service;
 
+import com.securepay.debug.DebugNdjson619;
 import com.securepay.auth.exception.AuthenticationFailedException;
 import com.securepay.auth.exception.DuplicateUserException;
 import com.securepay.auth.exception.InvalidTotpException;
@@ -77,10 +78,13 @@ public class AuthService {
         }
 
         String passwordHash = passwordEncoder.encode(request.getPassword());
+        String phoneDigits = request.getPhone().trim().replaceAll("\\D", "");
+        String vpa = phoneDigits + "@securepay";
 
         User user = User.builder()
                 .email(request.getEmail().toLowerCase().trim())
                 .phone(request.getPhone().trim())
+                .vpa(vpa)
                 .passwordHash(passwordHash)
                 .isActive(true)
                 .failedAttempts(0)
@@ -91,12 +95,19 @@ public class AuthService {
         log.info("New user registered: userId={}", saved.getId());
         Wallet wallet = Wallet.builder()
                 .userId(saved.getId())
-                .balance(new BigDecimal(5000))
+                .balance(BigDecimal.ZERO)
                 .payeeVpa(saved.getVpa())
                 .build();
 
         walletRepository.save(wallet);
-        log.info("Automatic user Wallet registered: userId={}", wallet.getId());
+        // #region agent log
+        DebugNdjson619.append(
+                "R1",
+                "AuthService.register",
+                "wallet_after_register",
+                "{\"userId\":\"" + saved.getId() + "\",\"walletBalance\":\"" + wallet.getBalance() + "\"}");
+        // #endregion
+        log.info("Wallet created for user: userId={}, walletId={}", saved.getId(), wallet.getId());
         return RegisterResponse.builder()
                 .userId(saved.getId().toString())
                 .message("Registration successful. Please log in.")

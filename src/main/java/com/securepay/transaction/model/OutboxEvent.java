@@ -3,6 +3,9 @@ package com.securepay.transaction.model;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -61,6 +64,7 @@ public class OutboxEvent {
  private String topic;           // Kafka topic
 
  @Column(nullable = false, columnDefinition = "JSONB", updatable = false)
+ @JdbcTypeCode(SqlTypes.JSON)
  private String payload;         // JSON string
 
  @Column(nullable = false)

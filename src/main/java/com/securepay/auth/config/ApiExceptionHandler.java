@@ -18,6 +18,12 @@ import java.util.Map;
 @RestControllerAdvice
 public class ApiExceptionHandler {
 
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> badRequest(IllegalArgumentException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
     @ExceptionHandler(DuplicateUserException.class)
     public ResponseEntity<Map<String, String>> duplicate(DuplicateUserException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)

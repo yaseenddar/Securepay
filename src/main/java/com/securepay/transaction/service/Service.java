@@ -1,5 +1,6 @@
 package com.securepay.transaction.service;
 
+import com.securepay.debug.DebugNdjson619;
 import com.securepay.transaction.dto.*;
 import com.securepay.transaction.exception.*;
 import com.securepay.transaction.model.OutboxEvent;
@@ -88,7 +89,7 @@ class PaymentService implements PaymentOperations {
      */
     @Transactional
     public PaymentResponse initiatePayment(PaymentRequest request, AuthContext auth) throws InsufficientFundsException {
-
+    	 log.info("Processing the Payment for the vpa {}",request.getPayeeVpa());
         // ── Step 1: Idempotency fast-path check ──────────────────────────────
         // Check BEFORE building the entity — avoid wasted work on duplicates.
         Optional<Payment> existing = idempotencyService.findExisting(request.getIdempotencyKey());
@@ -109,11 +110,14 @@ class PaymentService implements PaymentOperations {
             return toResponse(found);
         }
 
+        String payeeVpa = request.getPayeeVpa() == null ? "" : request.getPayeeVpa().trim();
+        assertPayerVpaDoesNotMatchPayee(auth.getUserId(), payeeVpa);
+
         // ── Step 2: Build new payment entity ──────────────────────────────────
         Payment payment = Payment.builder()
                 .idempotencyKey(request.getIdempotencyKey())
                 .payerUserId(auth.getUserId())
-                .payeeVpa(request.getPayeeVpa())
+                .payeeVpa(payeeVpa)
                 .amount(request.getAmount())
                 .currency("INR")
                 .status(PaymentStatus.INITIATED)
@@ -140,8 +144,9 @@ class PaymentService implements PaymentOperations {
         // At payment time we enforce the consequence of that risk score:
         // HIGH risk → investigate further or block
         // LOW/MEDIUM risk → proceed
+        log.info("Status check {}",payment.getStatus());
         payment.transitionTo(PaymentStatus.RISK_EVALUATED);
-
+        log.info("Status check {}",payment.getStatus());
         // ── Step 5: High-value gate — step-up auth check ──────────────────────
         boolean isHighValue = payment.isHighValue(highValueThreshold);
         boolean needsStepUp = isHighValue && !auth.isStepUpDone();
@@ -206,7 +211,6 @@ class PaymentService implements PaymentOperations {
      */
     @Transactional
     public PaymentResponse processPayment(UUID paymentId) throws InsufficientFundsException {
-
         // ── Step 1: Load payment ──────────────────────────────────────────────
         Payment payment = paymentRepo.findById(paymentId)
                 .orElseThrow(() -> new PaymentNotFoundException(paymentId));
@@ -232,8 +236,12 @@ class PaymentService implements PaymentOperations {
         // a lock — we're only adding money, not checking a threshold.
         // However: reversal needs BOTH locked (for deduction on payee side).
         // For normal payment: only payer needs the exclusive lock.
-        Wallet payeeWallet = walletRepo.findByUserId(payment.getPayeeVpa())
+        Wallet payeeWallet = walletRepo.findByPayeeVpa(payment.getPayeeVpa())
                 .orElseThrow(() -> new WalletNotFoundException("Payee not registered"));
+        assertPayeeIsNotPayer(payment.getPayerUserId(), payeeWallet);
+        if (payment.getPayeeUserId() == null) {
+            payment.setPayeeUserId(payeeWallet.getUserId());
+        }
 
         // ── Step 4: Lock payer wallet — SELECT FOR UPDATE ─────────────────────
         //
@@ -253,6 +261,8 @@ class PaymentService implements PaymentOperations {
         // then acquire payer lock. Reduces the lock-hold duration.
         Wallet payerWallet = walletRepo.findByUserIdForUpdate(payment.getPayerUserId())
                 .orElseThrow(() -> new WalletNotFoundException("Payer not registered"));
+        // Do not deduct/credit here — LedgerService.writeDoubleEntry() applies the transfer
+        // once and inserts payer DEBIT + payee CREDIT into txn.ledger_entries in the same tx.
 
         // ── Step 5: Balance check with LOCKED balance ─────────────────────────
         // payerWallet.balance here reflects committed state from ALL prior transactions.
@@ -274,6 +284,7 @@ class PaymentService implements PaymentOperations {
         // If 0 rows affected → OptimisticLockException
         try {
             payment.transitionTo(PaymentStatus.PROCESSING);
+            log.info("Status check PROCESSING {}",payment.getStatus());
             paymentRepo.save(payment);
 
         } catch (ObjectOptimisticLockingFailureException ex) {
@@ -308,7 +319,22 @@ class PaymentService implements PaymentOperations {
                     payment.getId(),
                     "Payment: " + payment.getPayeeVpa()
             );
+            // #region agent log
+            DebugNdjson619.append(
+                    "P2",
+                    "PaymentService.processPayment",
+                    "ledger_write_ok",
+                    "{\"paymentId\":\"" + payment.getId() + "\",\"payerWalletId\":\""
+                            + payerWallet.getId() + "\",\"payeeWalletId\":\"" + payeeWallet.getId() + "\"}");
+            // #endregion
         } catch (InsufficientFundsException ex) {
+            // #region agent log
+            DebugNdjson619.append(
+                    "P2",
+                    "PaymentService.processPayment",
+                    "ledger_write_failed",
+                    "{\"paymentId\":\"" + payment.getId() + "\"}");
+            // #endregion
             // This should not happen — we checked balance above with the locked wallet.
             // If it does: data inconsistency between our check and the domain method.
             // Fail the payment explicitly and propagate.
@@ -435,6 +461,29 @@ class PaymentService implements PaymentOperations {
             throw new PaymentNotFoundException(paymentId);
         }
         return toResponse(payment);
+    }
+
+    /** Payer and payee must be different users (no paying your own VPA / wallet). */
+    private static void assertPayeeIsNotPayer(UUID payerUserId, Wallet payeeWallet) {
+        if (payeeWallet.getUserId().equals(payerUserId)) {
+            throw new IllegalArgumentException("Cannot send payment to your own VPA");
+        }
+    }
+
+    /**
+     * Reject when payee VPA string matches the payer's registered wallet VPA (same user).
+     */
+    private void assertPayerVpaDoesNotMatchPayee(UUID payerUserId, String payeeVpa) {
+        if (payeeVpa == null || payeeVpa.isBlank()) {
+            return;
+        }
+        walletRepo.findByUserId(payerUserId).ifPresent(payerWallet -> {
+            String payerVpa = payerWallet.getPayeeVpa();
+            if (payerVpa != null && !payerVpa.isBlank()
+                    && payerVpa.trim().equalsIgnoreCase(payeeVpa.trim())) {
+                throw new IllegalArgumentException("Cannot send payment to your own VPA");
+            }
+        });
     }
 
     // ── MAPPER ────────────────────────────────────────────────────────────────
