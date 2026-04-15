@@ -4,6 +4,10 @@ import com.securepay.auth.exception.AuthenticationFailedException;
 import com.securepay.auth.exception.DuplicateUserException;
 import com.securepay.auth.exception.InvalidTotpException;
 import com.securepay.auth.exception.TokenRevokedException;
+import com.securepay.transaction.exception.IllegalStateTransitionException;
+import com.securepay.transaction.exception.InsufficientFundsException;
+import com.securepay.transaction.exception.PaymentNotFoundException;
+import com.securepay.transaction.exception.WalletNotFoundException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -35,6 +39,30 @@ public class ApiExceptionHandler {
     @ExceptionHandler(TokenRevokedException.class)
     public ResponseEntity<Map<String, String>> revoked(TokenRevokedException ex) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(PaymentNotFoundException.class)
+    public ResponseEntity<Map<String, String>> paymentNotFound(PaymentNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(WalletNotFoundException.class)
+    public ResponseEntity<Map<String, String>> walletNotFound(WalletNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(InsufficientFundsException.class)
+    public ResponseEntity<Map<String, String>> insufficientFunds(InsufficientFundsException ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(Map.of("error", ex.getMessage()));
+    }
+
+    @ExceptionHandler(IllegalStateTransitionException.class)
+    public ResponseEntity<Map<String, String>> illegalPaymentState(IllegalStateTransitionException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(Map.of("error", ex.getMessage()));
     }
 }

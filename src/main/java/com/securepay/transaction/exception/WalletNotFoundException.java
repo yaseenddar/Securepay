@@ -11,8 +11,8 @@ public class WalletNotFoundException  extends RuntimeException  {
 	/**
 	 * 
 	 */
-	 public WalletNotFoundException(UUID uuid) {
-	        super("Wallet not found "+ uuid);
+	 public WalletNotFoundException(String string) {
+	        super("Wallet not found or  "+ string);
 	    }
 
 }

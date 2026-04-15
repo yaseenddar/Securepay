@@ -37,6 +37,9 @@ public class User {
     private String email;
 
     @Column(nullable = false, unique = true)
+    private String vpa;
+
+    @Column(nullable = false, unique = true)
     private String phone;
 
     @Column(name = "password_hash", nullable = false)

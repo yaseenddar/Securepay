@@ -30,7 +30,7 @@ import java.util.UUID;
 
 @Service
 @Slf4j
-class PaymentService {
+class PaymentService implements PaymentOperations {
 
     private final PaymentRepository paymentRepo;
     private final WalletRepository walletRepo;
@@ -232,8 +232,8 @@ class PaymentService {
         // a lock — we're only adding money, not checking a threshold.
         // However: reversal needs BOTH locked (for deduction on payee side).
         // For normal payment: only payer needs the exclusive lock.
-        Wallet payeeWallet = walletRepo.findByUserId(payment.getPayeeUserId())
-                .orElseThrow(() -> new WalletNotFoundException(payment.getPayeeUserId()));
+        Wallet payeeWallet = walletRepo.findByUserId(payment.getPayeeVpa())
+                .orElseThrow(() -> new WalletNotFoundException("Payee not registered"));
 
         // ── Step 4: Lock payer wallet — SELECT FOR UPDATE ─────────────────────
         //
@@ -252,7 +252,7 @@ class PaymentService {
         // BUT: for consistency with reversal (which locks both), we load payee first,
         // then acquire payer lock. Reduces the lock-hold duration.
         Wallet payerWallet = walletRepo.findByUserIdForUpdate(payment.getPayerUserId())
-                .orElseThrow(() -> new WalletNotFoundException(payment.getPayerUserId()));
+                .orElseThrow(() -> new WalletNotFoundException("Payer not registered"));
 
         // ── Step 5: Balance check with LOCKED balance ─────────────────────────
         // payerWallet.balance here reflects committed state from ALL prior transactions.
@@ -362,11 +362,15 @@ class PaymentService {
      * @throws InsufficientFundsException 
      */
     @Transactional
-    public PaymentResponse reversePayment(UUID paymentId, String reason) throws InsufficientFundsException {
+    public PaymentResponse reversePayment(UUID paymentId, String reason, AuthContext auth)
+            throws InsufficientFundsException {
 
         // ── Load and validate ─────────────────────────────────────────────────
         Payment payment = paymentRepo.findById(paymentId)
                 .orElseThrow(() -> new PaymentNotFoundException(paymentId));
+        if (!payment.getPayerUserId().equals(auth.getUserId())) {
+            throw new PaymentNotFoundException(paymentId);
+        }
 
         // Only SUCCESS payments can be reversed — state machine enforces this
         if (payment.getStatus() != PaymentStatus.SUCCESS) {
@@ -424,9 +428,12 @@ class PaymentService {
      * a consistent snapshot — no partial writes from concurrent transactions.
      */
     @Transactional(readOnly = true)
-    public PaymentResponse getPayment(UUID paymentId) {
+    public PaymentResponse getPayment(UUID paymentId, AuthContext auth) {
         Payment payment = paymentRepo.findById(paymentId)
                 .orElseThrow(() -> new PaymentNotFoundException(paymentId));
+        if (!payment.getPayerUserId().equals(auth.getUserId())) {
+            throw new PaymentNotFoundException(paymentId);
+        }
         return toResponse(payment);
     }
 

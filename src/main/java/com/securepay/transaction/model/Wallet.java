@@ -56,15 +56,22 @@ import lombok.Setter;
  @Column(name = "user_id", nullable = false, unique = true)
  private UUID userId;
 
+ @Column(name = "payee_vpa", unique = true)
+ private String payeeVpa;
+ 
+ @Builder.Default
  @Column(nullable = false, precision = 15, scale = 2)
  private BigDecimal balance = BigDecimal.ZERO;
-
+ 
+ @Builder.Default
  @Column(nullable = false, length = 3)
  private String currency = "INR";
 
+ @Builder.Default
  @Column(name = "is_active", nullable = false)
  private boolean isActive = true;
 
+ @Builder.Default
  @Column(name = "created_at", updatable = false)
  private LocalDateTime createdAt = LocalDateTime.now();
 

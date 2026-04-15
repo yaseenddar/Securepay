@@ -210,16 +210,16 @@ class LedgerService {
      if (lockPayerFirst) {
          // Payer UUID is lexicographically smaller → lock payer first
          payerWallet = walletRepo.findByUserIdForUpdate(payerUserId)
-                 .orElseThrow(() -> new WalletNotFoundException(payerUserId));
+                 .orElseThrow(() -> new WalletNotFoundException("payerWallet not found"));
          payeeWallet = walletRepo.findByUserIdForUpdate(payeeUserId)
-                 .orElseThrow(() -> new WalletNotFoundException(payeeUserId));
+                 .orElseThrow(() -> new WalletNotFoundException("payeeWallet not found"));
      } else {
          // Payee UUID is lexicographically smaller → lock payee first
          // Still return [payer, payee] — caller needs this distinction
          payeeWallet = walletRepo.findByUserIdForUpdate(payeeUserId)
-                 .orElseThrow(() -> new WalletNotFoundException(payeeUserId));
+                 .orElseThrow(() -> new WalletNotFoundException("payeeWallet not found"));
          payerWallet = walletRepo.findByUserIdForUpdate(payerUserId)
-                 .orElseThrow(() -> new WalletNotFoundException(payerUserId));
+                 .orElseThrow(() -> new WalletNotFoundException("payerWallet not found"));
      }
 
      log.debug("Wallets locked in order: first={}, second={}",

@@ -9,6 +9,9 @@ import com.securepay.auth.model.DeviceFingerprint;
 import com.securepay.auth.model.User;
 import com.securepay.auth.repository.AuthSessionRepository;
 import com.securepay.auth.repository.UserRepository;
+import com.securepay.transaction.model.Wallet;
+import com.securepay.transaction.repository.WalletRepository;
+
 import dev.samstevens.totp.code.CodeVerifier;
 import io.jsonwebtoken.JwtException;
 import lombok.extern.slf4j.Slf4j;
@@ -26,6 +29,7 @@ import securepay.app.auth.dto.RiskEvaluation;
 import securepay.app.auth.dto.StepUpRequest;
 import securepay.app.auth.dto.StepUpResponse;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.UUID;
@@ -41,6 +45,7 @@ public class AuthService {
     private final JwtService jwtService;
     private final PasswordEncoder passwordEncoder;
     private final CodeVerifier totpVerifier;
+    private final WalletRepository walletRepository;
 
     public AuthService(
             UserRepository userRepository,
@@ -49,7 +54,8 @@ public class AuthService {
             AuthSessionRepository sessionRepository,
             JwtService jwtService,
             PasswordEncoder passwordEncoder,
-            CodeVerifier totpVerifier
+            CodeVerifier totpVerifier,
+            WalletRepository walletRepository
     ) {
         this.userRepository = userRepository;
         this.deviceFingerprintService = deviceFingerprintService;
@@ -58,6 +64,7 @@ public class AuthService {
         this.jwtService = jwtService;
         this.passwordEncoder = passwordEncoder;
         this.totpVerifier = totpVerifier;
+        this.walletRepository= walletRepository;
     }
 
     @Transactional
@@ -82,7 +89,14 @@ public class AuthService {
         User saved = userRepository.save(user);
 
         log.info("New user registered: userId={}", saved.getId());
+        Wallet wallet = Wallet.builder()
+                .userId(saved.getId())
+                .balance(new BigDecimal(5000))
+                .payeeVpa(saved.getVpa())
+                .build();
 
+        walletRepository.save(wallet);
+        log.info("Automatic user Wallet registered: userId={}", wallet.getId());
         return RegisterResponse.builder()
                 .userId(saved.getId().toString())
                 .message("Registration successful. Please log in.")

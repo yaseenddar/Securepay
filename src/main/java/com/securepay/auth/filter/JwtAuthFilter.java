@@ -59,10 +59,11 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     // Request attribute keys — used by controllers to read claims
     // String constants prevent silent typos ("jti" vs "JWT_ID")
-    public static final String ATTR_JTI        = "jti";
-    public static final String ATTR_RISK_LEVEL = "riskLevel";
-    public static final String ATTR_STEP_UP    = "stepUpDone";
-    public static final String ATTR_USER_ID    = "userId";
+    public static final String ATTR_JTI          = "jti";
+    public static final String ATTR_RISK_LEVEL   = "riskLevel";
+    public static final String ATTR_STEP_UP      = "stepUpDone";
+    public static final String ATTR_USER_ID      = "userId";
+    public static final String ATTR_DEVICE_HASH  = "deviceHash";
 
     private final JwtService jwtService;
     private final AuthSessionRepository sessionRepository;
@@ -233,6 +234,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 claims.get(JwtService.CLAIM_RISK_LEVEL, String.class));
         request.setAttribute(ATTR_STEP_UP,
                 claims.get(JwtService.CLAIM_STEP_UP, Boolean.class));
+        request.setAttribute(ATTR_DEVICE_HASH,
+                claims.get(JwtService.CLAIM_DEVICE_HASH, String.class));
 
         // ── Continue filter chain ─────────────────────────────────────────────
         // Request proceeds to the next filter, then eventually to the controller.
